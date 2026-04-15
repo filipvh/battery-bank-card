@@ -2,7 +2,7 @@
 // Custom Lovelace card — multi-battery status with power averaging and projections
 
 // ⬇ Update this before publishing a new GitHub release ⬇
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 // ⬆ Must match the GitHub release tag (without the 'v') ⬆
 
 console.info(
@@ -112,7 +112,7 @@ class BatteryBankCard extends HTMLElement {
     let fed = 0;
     (this._config?.batteries ?? []).forEach((cfg, i) => {
       const hist     = this._history[i];
-      const powerRaw = this._val(cfg.entity_power);
+      const powerRaw = this._valPower(cfg.entity_power);
       if (powerRaw === null || !hist) return;
 
       const changed    = this._powerStateChanged(i);
@@ -190,6 +190,35 @@ class BatteryBankCard extends HTMLElement {
     if (!s || ['unknown','unavailable','none',''].includes(s.state)) return null;
     const v = parseFloat(s.state);
     return isNaN(v) ? null : v;
+  }
+
+  // Read an entity and scale to a canonical unit (W for power, kWh for energy)
+  // using its unit_of_measurement attribute. Case-sensitive match — HA's
+  // UnitOfPower/UnitOfEnergy strings distinguish mW (milli) from MW (mega).
+  // Unknown units fall through with factor 1.
+  _valScaled(eid, factors, defaultUnit) {
+    const s = this._hass?.states[eid];
+    if (!s || ['unknown','unavailable','none',''].includes(s.state)) return null;
+    const v = parseFloat(s.state);
+    if (isNaN(v)) return null;
+    const unit = (s.attributes?.unit_of_measurement ?? defaultUnit).trim();
+    return v * (factors[unit] ?? 1);
+  }
+
+  _valPower(eid)  { return this._valScaled(eid, { mW: 0.001, W: 1, kW: 1e3, MW: 1e6, GW: 1e9, TW: 1e12 }, 'W'); }
+  _valEnergy(eid) { return this._valScaled(eid, { Wh: 0.001, kWh: 1, MWh: 1e3, GWh: 1e6, TWh: 1e9 }, 'kWh'); }
+
+  // Read a state-of-charge entity. Rejects anything not reporting % — a
+  // unit-less template sensor or a 0-1 fraction would silently break the
+  // kWh / projection math, so we treat it as unavailable instead.
+  _valPct(eid) {
+    const s = this._hass?.states[eid];
+    if (!s || ['unknown','unavailable','none',''].includes(s.state)) return null;
+    const v = parseFloat(s.state);
+    if (isNaN(v)) return null;
+    const unit = (s.attributes?.unit_of_measurement ?? '').trim();
+    if (unit !== '%') return null;
+    return v;
   }
 
   _fmt(h) {
@@ -436,8 +465,8 @@ class BatteryBankCard extends HTMLElement {
 
     // ── Collect per-battery data ──────────────────────────────────────────────
     const data = bats.map((cfg, i) => {
-      const soc      = this._val(cfg.entity_soc);       // 0–100 %
-      const powerRaw = this._val(cfg.entity_power);     // W, negative=charge
+      const soc      = this._valPct(cfg.entity_soc);    // 0–100 %, null if unit isn't %
+      const powerRaw = this._valPower(cfg.entity_power); // scaled to W, negative=charge
       const floor    = cfg.soc_floor ?? 0;              // %
       const capKwh   = cfg.capacity_kwh ?? 4.4;
 
@@ -495,8 +524,8 @@ class BatteryBankCard extends HTMLElement {
         cfg, rawSoc, soc: usableSocPct, socValid, powerRaw, avgPwr,
         storedKwh, capKwh: usableCapKwh, totalCapKwh: capKwh,
         proj, hist, floor,
-        energyIn:  this._val(cfg.entity_energy_in)  ?? null,
-        energyOut: this._val(cfg.entity_energy_out) ?? null,
+        energyIn:  this._valEnergy(cfg.entity_energy_in)  ?? null,
+        energyOut: this._valEnergy(cfg.entity_energy_out) ?? null,
         isStale: powerRaw === null,
       };
     });
@@ -550,7 +579,7 @@ class BatteryBankCard extends HTMLElement {
     let displaySocPct = totalSocPct;
     let displaySocValid = totalKwhUsable > 0; // false when every battery's SoC entity is down
     if (combinedSocEntity) {
-      const entityVal = this._val(combinedSocEntity);
+      const entityVal = this._valPct(combinedSocEntity);
       if (entityVal !== null) { displaySocPct = Math.round(entityVal); displaySocValid = true; }
       else                    { displaySocValid = false; }
     }
