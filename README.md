@@ -34,7 +34,7 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for moni
 - **SoC floor support** — raw sensor (e.g. 12–100%) or pre-converted usable SoC
 - **Solo mode** — single battery with no title renders flush inside the card with no inner box
 - **Summary row** — combined SoC %, total stored kWh, total power, energy today (2+ batteries only)
-- **Stale detection** — red border + warning if no update received in >60 seconds
+- **Stale detection** — red border + warning when the power entity reports `unknown`, `unavailable`, `none` or an empty/non-numeric value
 - **Visual config editor** with native HA entity pickers and form controls
 - Throttled DOM updates — redraws at most once per 125 ms, data collected at full speed
 
@@ -89,7 +89,7 @@ batteries:
 |---|---|---|
 | `title` | — | Card header. Omit for no header. With a single battery and no title, the tile fills the card directly (solo mode). |
 | `entity_combined_soc` | — | **Optional.** An entity reporting the combined SoC % of the battery bank. If provided, its value is shown in the summary tile and clicking the tile opens the entity's more-info dialog. If omitted, combined SoC is calculated from the individual battery values weighted by capacity. |
-| `avg_count` | `5` | Number of power readings for the rolling average and predictions. Range 2–20. Each reading is only added when the sensor value actually changes. |
+| `avg_count` | `5` | Number of power readings for the rolling average and predictions. Range 2–20. A reading is added whenever the sensor value changes, and also re-fed every 15 seconds if the value stays constant, so the average stays current when the power sits at a flat value (e.g. 0 W). |
 | `show_predictions` | `true` | Show time-to-full / time-to-empty block per battery. |
 | `show_raw_soc` | `false` | Show raw SoC % from the entity alongside the converted usable %. Only meaningful when `soc_floor > 0`. |
 

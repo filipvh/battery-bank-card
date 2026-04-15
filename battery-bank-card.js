@@ -69,9 +69,10 @@ class BatteryBankCard extends HTMLElement {
     if (config.batteries.length > 6)
       throw new Error('battery-bank-card: maximum 6 batteries');
     this._config  = config;
-    this._history  = config.batteries.map(() => ({ readings: [], lastDir: null, stale: true }));
-    this._lastSeen = config.batteries.map(() => 0); // timestamp of last entity update
+    this._history     = config.batteries.map(() => ({ readings: [], lastDir: null, stale: true }));
+    this._lastFedTime = config.batteries.map(() => 0); // timestamp of last reading pushed into history
     this._build();
+    this._startTicker();
   }
 
   set hass(hass) {
@@ -101,29 +102,47 @@ class BatteryBankCard extends HTMLElement {
     }
   }
 
-  // Collect rolling power readings — only called when entity state has genuinely changed
+  // Collect rolling power readings. Feeds a reading when the entity state
+  // changes, or when ≥15s has passed without a change (so a stable value like
+  // 0W keeps refreshing the rolling average instead of going stale).
+  // Returns the number of readings pushed.
   _collectReadings() {
     const maxH = this._config?.avg_count ?? 5;
     const now  = Date.now();
+    let fed = 0;
     (this._config?.batteries ?? []).forEach((cfg, i) => {
       const hist     = this._history[i];
       const powerRaw = this._val(cfg.entity_power);
       if (powerRaw === null || !hist) return;
 
-      // Only update lastSeen and push a reading when THIS battery's power value changed
-      if (this._powerStateChanged(i)) {
-        this._lastSeen[i] = now;
-        const dir = powerRaw > 5 ? 'discharge' : powerRaw < -5 ? 'charge' : 'idle';
-        if (hist.lastDir !== null && hist.lastDir !== 'idle' && dir !== 'idle' && dir !== hist.lastDir) {
-          hist.readings = [];
-          hist.stale = true;
-        }
-        hist.lastDir = dir;
-        hist.readings.push(powerRaw);
-        if (hist.readings.length > maxH) hist.readings.shift();
-        if (hist.readings.length >= MIN_READINGS) hist.stale = false;
+      const changed    = this._powerStateChanged(i);
+      const lastFed    = this._lastFedTime?.[i] ?? 0;
+      const shouldFeed = changed || (now - lastFed) >= 15000;
+      if (!shouldFeed) return;
+
+      this._lastFedTime[i] = now;
+      const dir = powerRaw > 5 ? 'discharge' : powerRaw < -5 ? 'charge' : 'idle';
+      if (hist.lastDir !== null && hist.lastDir !== 'idle' && dir !== 'idle' && dir !== hist.lastDir) {
+        hist.readings = [];
+        hist.stale = true;
       }
+      hist.lastDir = dir;
+      hist.readings.push(powerRaw);
+      if (hist.readings.length > maxH) hist.readings.shift();
+      if (hist.readings.length >= MIN_READINGS) hist.stale = false;
+      fed++;
     });
+    return fed;
+  }
+
+  // Periodic tick: ensures the rolling average keeps advancing even when the
+  // power entity stops emitting state changes (e.g. sitting at a flat 0W).
+  _startTicker() {
+    if (this._ticker) clearInterval(this._ticker);
+    this._ticker = setInterval(() => {
+      if (!this._hass || !this._config) return;
+      if (this._collectReadings() > 0) this._update();
+    }, 5000);
   }
 
   // Check whether any watched entity state value has changed
@@ -157,6 +176,11 @@ class BatteryBankCard extends HTMLElement {
 
   disconnectedCallback() {
     if (this._updateTimer) { clearTimeout(this._updateTimer); this._updateTimer = null; }
+    if (this._ticker)      { clearInterval(this._ticker);    this._ticker = null; }
+  }
+
+  connectedCallback() {
+    if (this._config && !this._ticker) this._startTicker();
   }
 
   // ─── helpers ───────────────────────────────────────────────────────────────
@@ -279,8 +303,9 @@ class BatteryBankCard extends HTMLElement {
                     text-transform: uppercase;
                     color: var(--secondary-text-color); }
         .bat-power-pill {
+          display: inline-block;
           font-size: 10px; font-weight: 700;
-          padding: 2px 7px; border-radius: 20px; letter-spacing: 0.04em;
+          padding: 3px 8px; border-radius: 20px; letter-spacing: 0.04em;
         }
         .charging-pill    { background: color-mix(in srgb, var(--info-color, #60a5fa) 15%, transparent);
                             color: var(--info-color, #60a5fa); }
@@ -343,7 +368,7 @@ class BatteryBankCard extends HTMLElement {
           color: var(--secondary-text-color);
           display: flex; align-items: center; gap: 4px;
         }
-        .avg-val { font-weight: 700; }
+        .avg-val { display: inline-block; font-weight: 700; }
 
         /* Clickable elements */
         .clickable {
@@ -467,7 +492,7 @@ class BatteryBankCard extends HTMLElement {
         proj, hist, floor,
         energyIn:  this._val(cfg.entity_energy_in)  ?? null,
         energyOut: this._val(cfg.entity_energy_out) ?? null,
-        isStale: (Date.now() - (this._lastSeen?.[i] ?? 0)) > 60000,
+        isStale: powerRaw === null,
       };
     });
 
