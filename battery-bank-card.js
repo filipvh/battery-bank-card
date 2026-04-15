@@ -20,6 +20,7 @@ console.info(
 // type: custom:battery-bank-card
 // title: Battery Bank              # optional
 // avg_count: 5                     # optional, 2–20, number of readings for power average
+// entity_combined_soc: sensor.battery_combined_soc  # optional — if omitted, calculated from batteries
 // batteries:
 //   - name: Battery 1              # optional label
 //     entity_soc:   sensor.marstek_battery_1_usable_soc
@@ -133,7 +134,8 @@ class BatteryBankCard extends HTMLElement {
       (this._hass.states[b.entity_power]?.state       ?? '') + '|' +
       (this._hass.states[b.entity_energy_in]?.state   ?? '') + '|' +
       (this._hass.states[b.entity_energy_out]?.state  ?? '')
-    ).join(',');
+    ).join(',') + '|' +
+    (this._hass.states[this._config?.entity_combined_soc]?.state ?? '');
     if (fp === this._lastFingerprint) return false;
     this._lastFingerprint = fp;
     return true;
@@ -217,6 +219,14 @@ class BatteryBankCard extends HTMLElement {
           border: 1px solid var(--divider-color);
           border-radius: var(--ha-card-border-radius, 12px); padding: 10px 12px;
           min-width: 0;
+        }
+        .sum-tile--clickable {
+          cursor: pointer;
+          transition: border-color 0.2s, background 0.2s;
+        }
+        .sum-tile--clickable:hover {
+          border-color: var(--primary-color);
+          background: color-mix(in srgb, var(--primary-color) 8%, var(--secondary-background-color));
         }
         .sum-val { font-size: 15px; font-weight: 700;
                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -466,12 +476,12 @@ class BatteryBankCard extends HTMLElement {
       ? Math.round((totalKwhStored / totalKwhUsable) * 100) : 0;
 
     let sumPowerW = 0, anyPowerValid = false;
-    let totalEnergyIn = 0, totalEnergyOut = 0, anyEnergy = false;
+    let totalEnergyIn = 0, totalEnergyOut = 0;
     data.forEach(d => {
       const pw = d.avgPwr ?? d.powerRaw;
       if (pw !== null) { sumPowerW += pw; anyPowerValid = true; }
-      if (d.energyIn  !== null) { totalEnergyIn  += d.energyIn;  anyEnergy = true; }
-      if (d.energyOut !== null) { totalEnergyOut += d.energyOut; anyEnergy = true; }
+      if (d.energyIn  !== null) totalEnergyIn  += d.energyIn;
+      if (d.energyOut !== null) totalEnergyOut += d.energyOut;
     });
     const totalSumPwr = anyPowerValid ? sumPowerW : null;
 
@@ -505,9 +515,18 @@ class BatteryBankCard extends HTMLElement {
     } else {
       summaryEl.style.display = '';
       summaryEl.style.setProperty('--sum-cols', energySummaryTile ? 4 : 3);
+    // Combined SoC — use provided entity if configured, else calculate
+    const combinedSocEntity = this._config.entity_combined_soc ?? null;
+    let displaySocPct = totalSocPct;
+    if (combinedSocEntity) {
+      const entityVal = this._val(combinedSocEntity);
+      if (entityVal !== null) displaySocPct = Math.round(entityVal);
+    }
+    const socTileClass = combinedSocEntity ? 'sum-tile sum-tile--clickable' : 'sum-tile';
+
       summaryEl.innerHTML = `
-      <div class="sum-tile">
-        <div class="sum-val" style="color:${this._socColor(totalSocPct)}">${totalSocPct}%</div>
+      <div class="${socTileClass}" id="sum-soc">
+        <div class="sum-val" style="color:${this._socColor(displaySocPct)}">${displaySocPct}%</div>
         <div class="sum-lbl">Combined SoC</div>
       </div>
       <div class="sum-tile">
@@ -520,6 +539,17 @@ class BatteryBankCard extends HTMLElement {
       </div>
       ${energySummaryTile}
     `;
+
+      // Wire combined SoC tile click to more-info if entity provided
+      if (combinedSocEntity) {
+        summaryEl.querySelector('#sum-soc')?.addEventListener('click', () => {
+          this.dispatchEvent(new CustomEvent('hass-more-info', {
+            detail: { entityId: combinedSocEntity },
+            bubbles: true,
+            composed: true,
+          }));
+        });
+      }
     } // end else (data.length > 1)
 
     // ── Battery tiles ─────────────────────────────────────────────────────────
@@ -696,10 +726,11 @@ class BatteryBankCardEditor extends HTMLElement {
   // Flatten config batteries into flat keys for ha-form
   _toFormData() {
     const d = {
-      title:            this._config.title            ?? '',
-      avg_count:        this._config.avg_count        ?? 5,
-      show_predictions: this._config.show_predictions !== false,
-      show_raw_soc:     this._config.show_raw_soc     === true,
+      title:               this._config.title               ?? '',
+      entity_combined_soc: this._config.entity_combined_soc ?? '',
+      avg_count:           this._config.avg_count           ?? 5,
+      show_predictions:    this._config.show_predictions    !== false,
+      show_raw_soc:        this._config.show_raw_soc        === true,
     };
     (this._config.batteries ?? []).forEach((b, i) => {
       d[`bat_${i}_name`]              = b.name              ?? `Battery ${i + 1}`;
@@ -733,23 +764,27 @@ class BatteryBankCardEditor extends HTMLElement {
       if (!o.entity_energy_out) delete o.entity_energy_out;
       return o;
     });
-    return {
+    const cfg = {
       ...this._config,
-      title:            get('title',            this._config.title            ?? ''),
-      avg_count:        get('avg_count',        this._config.avg_count        ?? 5),
-      show_predictions: get('show_predictions', this._config.show_predictions !== false),
-      show_raw_soc:     get('show_raw_soc',     this._config.show_raw_soc     === true),
+      title:               get('title',               this._config.title               ?? ''),
+      entity_combined_soc: get('entity_combined_soc', this._config.entity_combined_soc ?? ''),
+      avg_count:           get('avg_count',           this._config.avg_count           ?? 5),
+      show_predictions:    get('show_predictions',    this._config.show_predictions    !== false),
+      show_raw_soc:        get('show_raw_soc',        this._config.show_raw_soc        === true),
       batteries: bats,
     };
+    if (!cfg.entity_combined_soc) delete cfg.entity_combined_soc;
+    return cfg;
   }
 
   // Human-readable labels for ha-form fields
   _computeLabel(schema) {
     const labels = {
-      title:            'Card title',
-      avg_count:        'Power average — number of readings',
-      show_predictions: 'Show time-to-full / time-to-empty predictions',
-      show_raw_soc:     'Show raw SoC % (only relevant when floor > 0)',
+      title:               'Card title',
+      entity_combined_soc: 'Combined SoC entity (optional — calculated if omitted)',
+      avg_count:           'Power average — number of readings',
+      show_predictions:    'Show time-to-full / time-to-empty predictions',
+      show_raw_soc:        'Show raw SoC % (only relevant when floor > 0)',
     };
     const key = schema.name.replace(/^bat_\d+_/, '');
     const batLabels = {
@@ -868,10 +903,11 @@ class BatteryBankCardEditor extends HTMLElement {
     // ── Card-level form — wired once ───────────────────────────────────────
     const cardForm = this.shadowRoot.getElementById('form-card');
     cardForm.schema = [
-      { name: 'title',            selector: { text: {} } },
-      { name: 'avg_count',        selector: { number: { min: 2, max: 20, step: 1, mode: 'slider' } } },
-      { name: 'show_predictions', selector: { boolean: {} } },
-      { name: 'show_raw_soc',     selector: { boolean: {} } },
+      { name: 'title',                selector: { text: {} } },
+      { name: 'entity_combined_soc',  selector: { entity: {} } },
+      { name: 'avg_count',            selector: { number: { min: 2, max: 20, step: 1, mode: 'slider' } } },
+      { name: 'show_predictions',     selector: { boolean: {} } },
+      { name: 'show_raw_soc',         selector: { boolean: {} } },
     ];
     cardForm.computeLabel = (s) => this._computeLabel(s);
     if (this._hass) cardForm.hass = this._hass;

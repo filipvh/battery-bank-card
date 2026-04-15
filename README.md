@@ -30,8 +30,9 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for moni
 - **Rolling average** of the last N power readings (configurable, default 5)
 - **Time-to-full / time-to-empty** predictions (toggleable)
 - **Daily energy** — charged ↓ and discharged ↑ kWh per battery and combined total
+- **Combined SoC tile** — calculated automatically, or linked to your own entity (clickable → more-info)
 - **SoC floor support** — raw sensor (e.g. 12–100%) or pre-converted usable SoC
-- **Solo mode** — single battery with no title renders as a seamless card with no inner box
+- **Solo mode** — single battery with no title renders flush inside the card with no inner box
 - **Summary row** — combined SoC %, total stored kWh, total power, energy today (2+ batteries only)
 - **Stale detection** — red border + warning if no update received in >60 seconds
 - **Visual config editor** with native HA entity pickers and form controls
@@ -63,11 +64,12 @@ A custom [Home Assistant](https://www.home-assistant.io/) Lovelace card for moni
 
 ## Configuration
 
-Add via the visual editor or use YAML:
+Add via the visual editor, or use YAML:
 
 ```yaml
 type: custom:battery-bank-card
 title: Marstek Venus E 3.0 x3    # optional
+entity_combined_soc: sensor.marstek_combined_soc  # optional — see below
 avg_count: 5                      # optional, 2–20, default 5
 show_predictions: true            # optional, default true
 show_raw_soc: false               # optional, default false
@@ -86,9 +88,10 @@ batteries:
 | Option | Default | Description |
 |---|---|---|
 | `title` | — | Card header. Omit for no header. With a single battery and no title, the tile fills the card directly (solo mode). |
-| `avg_count` | `5` | Number of power readings used for the rolling average and predictions. Range 2–20. |
-| `show_predictions` | `true` | Show time-to-full / time-to-empty block. |
-| `show_raw_soc` | `false` | Show raw SoC % from the entity alongside the converted usable %. Only relevant when `soc_floor > 0`. |
+| `entity_combined_soc` | — | **Optional.** An entity reporting the combined SoC % of the battery bank. If provided, its value is shown in the summary tile and clicking the tile opens the entity's more-info dialog. If omitted, combined SoC is calculated from the individual battery values weighted by capacity. |
+| `avg_count` | `5` | Number of power readings for the rolling average and predictions. Range 2–20. Each reading is only added when the sensor value actually changes. |
+| `show_predictions` | `true` | Show time-to-full / time-to-empty block per battery. |
+| `show_raw_soc` | `false` | Show raw SoC % from the entity alongside the converted usable %. Only meaningful when `soc_floor > 0`. |
 
 ### Battery options
 
@@ -102,7 +105,29 @@ batteries:
 | `entity_energy_in` | — | Entity reporting kWh charged today |
 | `entity_energy_out` | — | Entity reporting kWh discharged today |
 
-### SoC floor
+---
+
+## Combined SoC tile
+
+The summary row always shows a **Combined SoC** tile. By default its value is calculated from the individual battery SoC sensors, weighted by usable capacity:
+
+```
+combined % = total stored kWh / total usable capacity kWh × 100
+```
+
+If your integration exposes its own combined SoC sensor (for example a Marstek or Victron system sensor), you can link it with `entity_combined_soc`. When set:
+
+- The tile displays the value from your entity instead of the calculated figure
+- The tile becomes **clickable** — tapping it opens the entity's more-info dialog
+- The entity is included in change detection, so the card updates whenever its value changes
+
+```yaml
+entity_combined_soc: sensor.marstek_global_battery_soc
+```
+
+---
+
+## SoC floor
 
 **`soc_floor: 0` (default)** — the entity already reports 0–100% usable SoC. Set `capacity_kwh` to the usable capacity.
 
@@ -113,15 +138,28 @@ usable % = (raw % − floor) / (100 − floor) × 100
 usable kWh = capacity_kwh × (100 − floor) / 100
 ```
 
-### Daily energy totals
+Example — Marstek battery where 12% is the physical empty point:
+
+```yaml
+- entity_soc:   sensor.marstek_venus_e_v3_0_1_battery_soc   # reports 12–100%
+  entity_power: sensor.marstek_venus_e_v3_0_1_battery_power
+  soc_floor:    12
+  capacity_kwh: 5.0    # total physical — card shows 4.4 kWh usable
+```
+
+---
+
+## Daily energy totals
 
 If `entity_energy_in` and `entity_energy_out` are configured for **all** batteries, the card shows:
 - Per-battery charged/discharged kWh in each tile
 - A combined **Energy today** tile in the summary row
 
-If any battery is missing either entity, the combined tile is hidden.
+If any battery is missing either entity, or if either sensor is unavailable, the combined tile is hidden to avoid showing misleading totals.
 
-### Power convention
+---
+
+## Power convention
 
 | Value | Meaning | Display |
 |---|---|---|
@@ -136,6 +174,7 @@ If any battery is missing either entity, the combined tile is hidden.
 ```yaml
 type: custom:battery-bank-card
 title: Marstek Venus E 3.0 x3
+entity_combined_soc: sensor.marstek_global_battery_soc
 avg_count: 20
 show_predictions: true
 show_raw_soc: true
