@@ -2,7 +2,7 @@
 // Custom Lovelace card — multi-battery status with power averaging and projections
 
 // ⬇ Update this before publishing a new GitHub release ⬇
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 // ⬆ Must match the GitHub release tag (without the 'v') ⬆
 
 console.info(
@@ -749,16 +749,21 @@ class BatteryBankCardEditor extends HTMLElement {
     this._config = {};
   }
 
-  // Build the ha-form schema for one battery slot
+  // Build the ha-form schema for one battery slot.
+  // SoC: domain-only — template sensors often lack device_class: battery.
+  // Power/Energy: device_class is standard for these, so filter strictly.
   _batSchema(i) {
+    const socFilter    = { domain: 'sensor' };
+    const powerFilter  = { domain: 'sensor', device_class: 'power' };
+    const energyFilter = { domain: 'sensor', device_class: 'energy' };
     return [
-      { name: `bat_${i}_name`,           selector: { text: {} } },
-      { name: `bat_${i}_entity_soc`,     selector: { entity: {} } },
-      { name: `bat_${i}_entity_power`,   selector: { entity: {} } },
-      { name: `bat_${i}_entity_energy_in`,  selector: { entity: {} } },
-      { name: `bat_${i}_entity_energy_out`, selector: { entity: {} } },
-      { name: `bat_${i}_soc_floor`,      selector: { number: { min: 0, max: 50, step: 1, mode: 'box', unit_of_measurement: '%' } } },
-      { name: `bat_${i}_capacity_kwh`,   selector: { number: { min: 0.1, max: 100, step: 0.1, mode: 'box', unit_of_measurement: 'kWh' } } },
+      { name: `bat_${i}_name`,              selector: { text: {} } },
+      { name: `bat_${i}_entity_soc`,        selector: { entity: { filter: socFilter } } },
+      { name: `bat_${i}_entity_power`,      selector: { entity: { filter: powerFilter } } },
+      { name: `bat_${i}_entity_energy_in`,  selector: { entity: { filter: energyFilter } } },
+      { name: `bat_${i}_entity_energy_out`, selector: { entity: { filter: energyFilter } } },
+      { name: `bat_${i}_soc_floor`,         selector: { number: { min: 0, max: 50, step: 1, mode: 'box', unit_of_measurement: '%' } } },
+      { name: `bat_${i}_capacity_kwh`,      selector: { number: { min: 0.1, max: 100, step: 0.1, mode: 'box', unit_of_measurement: 'kWh' } } },
     ];
   }
 
@@ -943,7 +948,7 @@ class BatteryBankCardEditor extends HTMLElement {
     const cardForm = this.shadowRoot.getElementById('form-card');
     cardForm.schema = [
       { name: 'title',                selector: { text: {} } },
-      { name: 'entity_combined_soc',  selector: { entity: {} } },
+      { name: 'entity_combined_soc',  selector: { entity: { filter: { domain: 'sensor' } } } },
       { name: 'avg_count',            selector: { number: { min: 2, max: 20, step: 1, mode: 'slider' } } },
       { name: 'show_predictions',     selector: { boolean: {} } },
       { name: 'show_raw_soc',         selector: { boolean: {} } },
