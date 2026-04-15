@@ -1,7 +1,9 @@
 // battery-bank-card.js
 // Custom Lovelace card — multi-battery status with power averaging and projections
 
-const VERSION = '1.0.0';
+// ⬇ Update this before publishing a new GitHub release ⬇
+const VERSION = '1.0.1';
+// ⬆ Must match the GitHub release tag (without the 'v') ⬆
 
 console.info(
   `%c Battery Bank Card %c ${VERSION} `,
@@ -75,23 +77,21 @@ class BatteryBankCard extends HTMLElement {
     this._hass = hass;
     if (!this._config) return;
 
-    // Always collect rolling power readings at full speed
-    this._collectReadings();
-
-    // Skip DOM update if nothing we care about changed
+    // Only act when our watched entities actually changed state value
     if (!this._hasRelevantChange()) return;
+
+    // Collect readings only on genuine sensor updates, not on unrelated HA events
+    this._collectReadings();
 
     // Throttle DOM redraws: at most one per 125ms, but never delay the first one
     const now = Date.now();
     const elapsed = now - (this._lastDrawTime ?? 0);
 
     if (elapsed >= 125) {
-      // Draw immediately
       this._lastDrawTime = now;
       if (this._updateTimer) { clearTimeout(this._updateTimer); this._updateTimer = null; }
       this._update();
     } else if (!this._updateTimer) {
-      // Schedule trailing draw for when the 125ms window expires
       this._updateTimer = setTimeout(() => {
         this._updateTimer = null;
         this._lastDrawTime = Date.now();
@@ -100,7 +100,7 @@ class BatteryBankCard extends HTMLElement {
     }
   }
 
-  // Collect rolling power readings from current hass state (runs at full speed)
+  // Collect rolling power readings — only called when entity state has genuinely changed
   _collectReadings() {
     const maxH = this._config?.avg_count ?? 5;
     const now  = Date.now();
@@ -108,18 +108,20 @@ class BatteryBankCard extends HTMLElement {
       const hist     = this._history[i];
       const powerRaw = this._val(cfg.entity_power);
       if (powerRaw === null || !hist) return;
-      // Track that we received a value — even if unchanged
-      if (!this._lastSeen) this._lastSeen = this._config.batteries.map(() => 0);
-      this._lastSeen[i] = now;
-      const dir = powerRaw > 5 ? 'discharge' : powerRaw < -5 ? 'charge' : 'idle';
-      if (hist.lastDir !== null && hist.lastDir !== 'idle' && dir !== 'idle' && dir !== hist.lastDir) {
-        hist.readings = [];
-        hist.stale = true;
+
+      // Only update lastSeen and push a reading when THIS battery's power value changed
+      if (this._powerStateChanged(i)) {
+        this._lastSeen[i] = now;
+        const dir = powerRaw > 5 ? 'discharge' : powerRaw < -5 ? 'charge' : 'idle';
+        if (hist.lastDir !== null && hist.lastDir !== 'idle' && dir !== 'idle' && dir !== hist.lastDir) {
+          hist.readings = [];
+          hist.stale = true;
+        }
+        hist.lastDir = dir;
+        hist.readings.push(powerRaw);
+        if (hist.readings.length > maxH) hist.readings.shift();
+        if (hist.readings.length >= MIN_READINGS) hist.stale = false;
       }
-      hist.lastDir = dir;
-      hist.readings.push(powerRaw);
-      if (hist.readings.length > maxH) hist.readings.shift();
-      if (hist.readings.length >= MIN_READINGS) hist.stale = false;
     });
   }
 
@@ -137,7 +139,23 @@ class BatteryBankCard extends HTMLElement {
     return true;
   }
 
+  // Check per-battery whether the power entity specifically changed (for lastSeen)
+  _powerStateChanged(i) {
+    const cfg = this._config?.batteries?.[i];
+    if (!cfg?.entity_power) return false;
+    const cur = this._hass?.states[cfg.entity_power]?.state ?? null;
+    const prev = this._lastPowerState?.[i] ?? null;
+    if (cur === prev) return false;
+    if (!this._lastPowerState) this._lastPowerState = [];
+    this._lastPowerState[i] = cur;
+    return true;
+  }
+
   getCardSize() { return Math.ceil(this._config?.batteries?.length ?? 1) + 2; }
+
+  disconnectedCallback() {
+    if (this._updateTimer) { clearTimeout(this._updateTimer); this._updateTimer = null; }
+  }
 
   // ─── helpers ───────────────────────────────────────────────────────────────
 
@@ -456,7 +474,10 @@ class BatteryBankCard extends HTMLElement {
       ? (totalSumPwr < 0 ? '↓ ' : totalSumPwr > 5 ? '↑ ' : '~ ')
         + Math.abs(Math.round(totalSumPwr)) + ' W' : '— W';
 
-    const allHaveBothEnergy = data.every(d => d.cfg.entity_energy_in && d.cfg.entity_energy_out);
+    const allHaveBothEnergy = data.every(d =>
+      d.cfg.entity_energy_in && d.cfg.entity_energy_out &&
+      d.energyIn !== null && d.energyOut !== null
+    );
 
     const energySummaryTile = allHaveBothEnergy ? `
       <div class="sum-tile">
@@ -566,7 +587,7 @@ class BatteryBankCard extends HTMLElement {
         }
       }
 
-      // Energy today section
+      // Energy today section — only show if values are actually valid
       const hasEnergy = d.energyIn !== null || d.energyOut !== null;
       const energyHTML = hasEnergy ? `
         <div class="energy-row">
@@ -622,7 +643,9 @@ class BatteryBankCard extends HTMLElement {
   }
 }
 
-customElements.define('battery-bank-card', BatteryBankCard);
+if (!customElements.get('battery-bank-card')) {
+  customElements.define('battery-bank-card', BatteryBankCard);
+}
 
 // ── Editor ─────────────────────────────────────────────────────────────────────
 
@@ -873,14 +896,18 @@ class BatteryBankCardEditor extends HTMLElement {
   }
 }
 
-customElements.define('battery-bank-card-editor', BatteryBankCardEditor);
+if (!customElements.get('battery-bank-card-editor')) {
+  customElements.define('battery-bank-card-editor', BatteryBankCardEditor);
+}
 
 // Register in HA card picker
 window.customCards = window.customCards ?? [];
-window.customCards.push({
-  type:        'battery-bank-card',
-  name:        'Battery Bank',
-  description: 'Multi-battery status with power averaging and projections',
-  version:     VERSION,
-  preview:     false,
-});
+if (!window.customCards.some(c => c.type === 'battery-bank-card')) {
+  window.customCards.push({
+    type:        'battery-bank-card',
+    name:        'Battery Bank',
+    description: 'Multi-battery status with power averaging and projections',
+    version:     VERSION,
+    preview:     false,
+  });
+}
