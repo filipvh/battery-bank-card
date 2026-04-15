@@ -2,7 +2,7 @@
 // Custom Lovelace card — multi-battery status with power averaging and projections
 
 // ⬇ Update this before publishing a new GitHub release ⬇
-const VERSION = '1.0.1';
+const VERSION = '1.1.0';
 // ⬆ Must match the GitHub release tag (without the 'v') ⬆
 
 console.info(
@@ -335,6 +335,14 @@ class BatteryBankCard extends HTMLElement {
         }
         .avg-val { font-weight: 700; }
 
+        /* Clickable elements */
+        .clickable {
+          cursor: pointer;
+          border-radius: 4px;
+          transition: opacity 0.15s;
+        }
+        .clickable:hover { opacity: 0.75; }
+
         /* Projection */
         .proj {
           font-size: 11px;
@@ -591,8 +599,8 @@ class BatteryBankCard extends HTMLElement {
       const hasEnergy = d.energyIn !== null || d.energyOut !== null;
       const energyHTML = hasEnergy ? `
         <div class="energy-row">
-          ${d.energyIn  !== null ? `<span style="color:var(--info-color,#60a5fa)">↓ ${d.energyIn.toFixed(2)} kWh</span>` : ''}
-          ${d.energyOut !== null ? `<span style="color:var(--warning-color,#f97316)">↑ ${d.energyOut.toFixed(2)} kWh</span>` : ''}
+          ${d.energyIn  !== null ? `<span class="clickable" data-entity="${d.cfg.entity_energy_in}" style="color:var(--info-color,#60a5fa)">↓ ${d.energyIn.toFixed(2)} kWh</span>` : ''}
+          ${d.energyOut !== null ? `<span class="clickable" data-entity="${d.cfg.entity_energy_out}" style="color:var(--warning-color,#f97316)">↑ ${d.energyOut.toFixed(2)} kWh</span>` : ''}
         </div>` : '';
 
       const showRaw = this._config.show_raw_soc === true;
@@ -602,10 +610,10 @@ class BatteryBankCard extends HTMLElement {
           <span class="bat-name">${d.cfg.name ?? `Battery ${i + 1}`}</span>
           ${d.isStale
             ? `<span class="stale-indicator">⚠ no data</span>`
-            : `<span class="bat-power-pill ${powerPillClass}">${powerDisp}</span>`}
+            : `<span class="bat-power-pill clickable ${powerPillClass}" data-entity="${d.cfg.entity_power}">${powerDisp}</span>`}
         </div>
 
-        <div class="soc-row">
+        <div class="soc-row clickable" data-entity="${d.cfg.entity_soc}">
           <div class="bat-icon">
             <div class="bat-icon-cap"></div>
             <div class="bat-icon-body">
@@ -620,14 +628,30 @@ class BatteryBankCard extends HTMLElement {
         </div>
 
         <div class="avg-row">
-          <span class="avg-val" style="color:${dirColor}">${avgDisp}</span>
+          <span class="avg-val clickable" data-entity="${d.cfg.entity_power}" style="color:${dirColor}">${avgDisp}</span>
           <span style="opacity:0.4;font-size:9px">(${readings.length}/${maxH})</span>
         </div>
 
         ${energyHTML}
         ${projHTML}
       `;
+
+      // Wire click handlers for more-info dialogs
+      tile.querySelectorAll('[data-entity]').forEach(el => {
+        el.addEventListener('click', e => {
+          e.stopPropagation();
+          this._moreInfo(el.dataset.entity);
+        });
+      });
     });
+  }
+
+  _moreInfo(entityId) {
+    if (!entityId) return;
+    this.dispatchEvent(new CustomEvent('hass-more-info', {
+      bubbles: true, composed: true,
+      detail: { entityId },
+    }));
   }
 
   _socColor(pct) {
