@@ -2,7 +2,7 @@
 // Custom Lovelace card — multi-battery status with power averaging and projections
 
 // ⬇ Update this before publishing a new GitHub release ⬇
-const VERSION = '1.1.0';
+const VERSION = '1.4.0';
 // ⬆ Must match the GitHub release tag (without the 'v') ⬆
 
 console.info(
@@ -451,7 +451,8 @@ class BatteryBankCard extends HTMLElement {
       // If soc_floor > 0: entity reports raw SoC (e.g. 12-100%),
       //   capacity_kwh is the TOTAL physical capacity.
       //   usable range = (100 - floor)%, usable capacity = capacity_kwh * (100-floor)/100
-      const rawSoc     = soc ?? 0;                    // as reported by entity
+      const socValid = soc !== null;
+      const rawSoc   = soc ?? 0;                      // as reported by entity
       let usableSocPct, usableCapKwh;
       if (floor > 0) {
         // Clamp raw below floor to 0, above to 100
@@ -466,13 +467,17 @@ class BatteryBankCard extends HTMLElement {
       const storedKwh = (usableSocPct / 100) * usableCapKwh;
       const emptyKwh  = usableCapKwh - storedKwh;   // kWh headroom to full
 
-      totalKwhStored += storedKwh;
-      totalKwhUsable += usableCapKwh;
+      // Only count batteries with a valid SoC toward the combined totals —
+      // a down battery shouldn't drag the aggregate to 0.
+      if (socValid) {
+        totalKwhStored += storedKwh;
+        totalKwhUsable += usableCapKwh;
+      }
       if (powerRaw !== null) { totalPowerW += powerRaw; totalPowerValid++; }
 
-      // Projection
+      // Projection — needs a valid SoC (storedKwh/emptyKwh are meaningless otherwise)
       let proj = null; // { dir, timeH, timeStr } or null
-      if (!hist.stale && avgPwr !== null && Math.abs(avgPwr) > 5) {
+      if (socValid && !hist.stale && avgPwr !== null && Math.abs(avgPwr) > 5) {
         if (avgPwr < 0) {
           // Charging — time to full
           const rateKwh = Math.abs(avgPwr) / 1000;
@@ -487,7 +492,7 @@ class BatteryBankCard extends HTMLElement {
       }
 
       return {
-        cfg, rawSoc, soc: usableSocPct, powerRaw, avgPwr,
+        cfg, rawSoc, soc: usableSocPct, socValid, powerRaw, avgPwr,
         storedKwh, capKwh: usableCapKwh, totalCapKwh: capKwh,
         proj, hist, floor,
         energyIn:  this._val(cfg.entity_energy_in)  ?? null,
@@ -543,19 +548,24 @@ class BatteryBankCard extends HTMLElement {
     // Combined SoC — use provided entity if configured, else calculate
     const combinedSocEntity = this._config.entity_combined_soc ?? null;
     let displaySocPct = totalSocPct;
+    let displaySocValid = totalKwhUsable > 0; // false when every battery's SoC entity is down
     if (combinedSocEntity) {
       const entityVal = this._val(combinedSocEntity);
-      if (entityVal !== null) displaySocPct = Math.round(entityVal);
+      if (entityVal !== null) { displaySocPct = Math.round(entityVal); displaySocValid = true; }
+      else                    { displaySocValid = false; }
     }
     const socTileClass = combinedSocEntity ? 'sum-tile sum-tile--clickable' : 'sum-tile';
+    const socValDisp   = displaySocValid ? `${displaySocPct}%` : '—';
+    const socValColor  = displaySocValid ? this._socColor(displaySocPct) : 'var(--disabled-text-color)';
+    const storedValDisp = totalKwhUsable > 0 ? `${totalKwhStored.toFixed(2)} kWh` : '—';
 
       summaryEl.innerHTML = `
       <div class="${socTileClass}" id="sum-soc">
-        <div class="sum-val" style="color:${this._socColor(displaySocPct)}">${displaySocPct}%</div>
+        <div class="sum-val" style="color:${socValColor}">${socValDisp}</div>
         <div class="sum-lbl">Combined SoC</div>
       </div>
       <div class="sum-tile">
-        <div class="sum-val">${totalKwhStored.toFixed(2)} kWh</div>
+        <div class="sum-val">${storedValDisp}</div>
         <div class="sum-lbl">Stored</div>
       </div>
       <div class="sum-tile">
@@ -605,9 +615,13 @@ class BatteryBankCard extends HTMLElement {
 
       tile.className = `bat-tile ${d.isStale ? 'stale' : dir}`;
 
-      const fillColor  = this._socColor(d.soc);
+      const fillColor  = d.socValid ? this._socColor(d.soc) : 'var(--disabled-text-color)';
       const dirColor   = this._dirColor(dir);
-      const fillH      = Math.max(2, Math.round((d.soc / 100) * 52));
+      const fillH      = d.socValid ? Math.max(2, Math.round((d.soc / 100) * 52)) : 0;
+      const socPctDisp = d.socValid ? `${Math.round(d.soc)}%` : '—';
+      const socKwhDisp = d.socValid
+        ? `${d.storedKwh.toFixed(2)} / ${d.capKwh.toFixed(1)} kWh`
+        : `— / ${d.capKwh.toFixed(1)} kWh`;
 
       const powerPillClass = dir === 'charging' ? 'charging-pill'
         : dir === 'discharging' ? 'discharging-pill' : 'idle-pill';
@@ -676,9 +690,9 @@ class BatteryBankCard extends HTMLElement {
             </div>
           </div>
           <div class="soc-info">
-            <div class="soc-pct" style="color:${fillColor}">${Math.round(d.soc)}%</div>
-            <div class="soc-kwh">${d.storedKwh.toFixed(2)} / ${d.capKwh.toFixed(1)} kWh</div>
-            ${showRaw && d.floor > 0 ? `<div class="soc-raw">raw ${Math.round(d.rawSoc)}%</div>` : ''}
+            <div class="soc-pct" style="color:${fillColor}">${socPctDisp}</div>
+            <div class="soc-kwh">${socKwhDisp}</div>
+            ${showRaw && d.floor > 0 && d.socValid ? `<div class="soc-raw">raw ${Math.round(d.rawSoc)}%</div>` : ''}
           </div>
         </div>
 
